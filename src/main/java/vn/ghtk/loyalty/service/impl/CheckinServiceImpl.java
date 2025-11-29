@@ -19,11 +19,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -110,70 +108,54 @@ public class CheckinServiceImpl implements CheckinService {
         List<DailyCheckin> checkins = dailyCheckinRepository.findByUserIdAndMonth(userId, year, month);
 
         // Create a map of check-in dates for quick lookup
-        Set<LocalDate> checkinDates = checkins.stream()
-                .map(DailyCheckin::getCheckinDate)
-                .collect(Collectors.toSet());
+        Map<LocalDate, DailyCheckin> checkinMap = checkins.stream()
+                .collect(Collectors.toMap(DailyCheckin::getCheckinDate, Function.identity()));
 
-        // Count how many days already checked in
-        int checkedInCount = checkins.size();
-
-        // Get points sequence from config
+        int maxPerMonth = checkinConfig.getMaxPerMonth();
         int[] pointsSequence = checkinConfig.getPointsSequence();
+        int checkedInCount = checkins.size();
 
         List<CheckinStatusResponse> statusList = new ArrayList<>();
 
-        // Add already checked-in days
-        for (DailyCheckin checkin : checkins) {
-            CheckinStatusResponse status = CheckinStatusResponse.builder()
+        // Add all checked-in days (sorted by date)
+        List<DailyCheckin> sortedCheckins = checkins.stream()
+                .sorted(Comparator.comparing(DailyCheckin::getCheckinDate))
+                .toList();
+
+        for (DailyCheckin checkin : sortedCheckins) {
+            statusList.add(CheckinStatusResponse.builder()
                     .date(checkin.getCheckinDate())
                     .checkedIn(true)
                     .pointsEarned(checkin.getPointsEarned())
-                    .build();
-            statusList.add(status);
+                    .build());
         }
 
-        // If not enough days (based on max-per-month), add future days starting from today (or tomorrow if today already checked in)
-        int maxPerMonth = checkinConfig.getMaxPerMonth();
-        if (checkedInCount < maxPerMonth) {
-            LocalDate currentDate = today;
-            // If today already checked in, start from tomorrow
-            if (checkinDates.contains(today)) {
-                currentDate = today.plusDays(1);
-            }
-            
-            int daysToAdd = maxPerMonth - checkedInCount;
-            int addedCount = 0;
-
-            for (int i = 0; i < daysToAdd && addedCount < daysToAdd; i++) {
-                // Stop if we exceed current month
-                if (currentDate.getMonthValue() != month) {
-                    break;
-                }
-
-                // Skip if this date is already in the list (already checked in)
-                if (!checkinDates.contains(currentDate)) {
-                    int dayIndex = checkedInCount + addedCount; // Index in the points sequence
-                    // Ensure index doesn't exceed points sequence length
-                    if (dayIndex >= pointsSequence.length) {
-                        break;
-                    }
-                    int pointsEarned = pointsSequence[dayIndex];
-
-                    CheckinStatusResponse status = CheckinStatusResponse.builder()
-                            .date(currentDate)
-                            .checkedIn(false)
-                            .pointsEarned(pointsEarned)
-                            .build();
-                    statusList.add(status);
-                    addedCount++;
-                }
-
-                currentDate = currentDate.plusDays(1);
+        // Add today if not checked in yet
+        boolean todayCheckedIn = checkinMap.containsKey(today);
+        if (!todayCheckedIn && checkedInCount < maxPerMonth) {
+            if (checkedInCount < pointsSequence.length) {
+                statusList.add(CheckinStatusResponse.builder()
+                        .date(today)
+                        .checkedIn(false)
+                        .pointsEarned(pointsSequence[checkedInCount])
+                        .build());
             }
         }
 
-        // Sort by date to ensure chronological order
-        statusList.sort(Comparator.comparing(CheckinStatusResponse::getDate));
+        // Fill remaining slots with null dates
+        while (statusList.size() < maxPerMonth) {
+            int dayIndex = statusList.size(); // Index in the points sequence
+            Integer pointsEarned = null;
+            if (dayIndex < pointsSequence.length) {
+                pointsEarned = pointsSequence[dayIndex];
+            }
+
+            statusList.add(CheckinStatusResponse.builder()
+                    .date(null)
+                    .checkedIn(false)
+                    .pointsEarned(pointsEarned)
+                    .build());
+        }
 
         return statusList;
     }
