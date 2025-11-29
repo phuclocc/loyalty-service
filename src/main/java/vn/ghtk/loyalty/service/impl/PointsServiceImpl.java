@@ -2,6 +2,8 @@ package vn.ghtk.loyalty.service.impl;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -10,16 +12,15 @@ import org.springframework.transaction.annotation.Transactional;
 import vn.ghtk.loyalty.dto.request.DeductPointsRequest;
 import vn.ghtk.loyalty.dto.response.PageResponse;
 import vn.ghtk.loyalty.dto.response.PointsHistoryResponse;
-import vn.ghtk.loyalty.entity.User;
 import vn.ghtk.loyalty.entity.UserPointsHistory;
-import vn.ghtk.loyalty.enums.PointsTransactionType;
 import vn.ghtk.loyalty.exception.BusinessException;
 import vn.ghtk.loyalty.repository.UserPointsHistoryRepository;
-import vn.ghtk.loyalty.repository.UserRepository;
 import vn.ghtk.loyalty.service.PointsService;
+import vn.ghtk.loyalty.service.PointsTransactionService;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -27,37 +28,38 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class PointsServiceImpl implements PointsService {
 
-    private final UserRepository userRepository;
     private final UserPointsHistoryRepository userPointsHistoryRepository;
+    private final RedissonClient redissonClient;
+    private final PointsTransactionService pointsTransactionService;
 
     @Override
-    @Transactional
     public void deductPoints(Long userId, DeductPointsRequest request) {
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new BusinessException("User not found"));
 
-        int pointsToDeduct = request.getPoints();
+        // Use Redisson distributed lock to prevent concurrent deduction
+        String lockKey = String.format("lock:points:deduct:%d", userId);
+        RLock lock = redissonClient.getLock(lockKey);
+        boolean locked = false;
 
-        if (user.getTotalPoints() < pointsToDeduct) {
-            throw new BusinessException("Insufficient points. Current points: " + user.getTotalPoints());
+        try {
+            // Try to acquire lock with 5 seconds timeout, lease time 20s
+            locked = lock.tryLock(5, 20, TimeUnit.SECONDS);
+            if (!locked) {
+                throw new BusinessException("Unable to acquire lock. Please try again.");
+            }
+
+            // Perform deduction in transaction
+            pointsTransactionService.doDeductPointsTransactional(userId, request);
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException("Points deduction process was interrupted");
+        } finally {
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
-
-        // Deduct points
-        user.setTotalPoints(user.getTotalPoints() - pointsToDeduct);
-        userRepository.save(user);
-
-        // Save transaction history
-        UserPointsHistory history = UserPointsHistory.builder()
-                .userId(userId)
-                .points(-pointsToDeduct)
-                .transactionType(PointsTransactionType.DEDUCT)
-                .description("Points deduction")
-                .build();
-        userPointsHistoryRepository.save(history);
-
-        log.info("Deducted {} points from user {}. Remaining points: {}", 
-                pointsToDeduct, userId, user.getTotalPoints());
     }
+
 
     @Override
     @Transactional(readOnly = true)
