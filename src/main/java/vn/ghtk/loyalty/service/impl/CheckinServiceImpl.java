@@ -52,17 +52,9 @@ public class CheckinServiceImpl implements CheckinService {
 
         String redisKey = String.format("checkin:%d:%s", userId, today.format(DateTimeFormatter.ISO_DATE));
 
-        // Quick check Redis, nhưng luôn xác nhận lại với DB để tránh dirty key
+        // Quick check Redis for early exit (Redis chỉ set sau khi DB commit thành công)
         if (Boolean.TRUE.equals(redisTemplate.hasKey(redisKey))) {
-            boolean existsInDb = dailyCheckinRepository
-                    .findByUserIdAndCheckinDate(userId, today)
-                    .isPresent();
-            if (existsInDb) {
-                throw new BusinessException("You have already checked in today");
-            } else {
-                // Redis có key nhưng DB không có record → lần trước lỗi giữa chừng, xoá key để cho phép check-in lại
-                redisTemplate.delete(redisKey);
-            }
+            throw new BusinessException("You have already checked in today");
         }
 
         // Use Redisson lock to prevent concurrent check-ins
@@ -80,7 +72,7 @@ public class CheckinServiceImpl implements CheckinService {
             // Thực hiện check-in trong transaction, commit xong trước khi unlock
             CheckinResponse response = checkinTransactionService.doCheckinTransactional(userId, today);
 
-            // Sau khi DB commit thành công, set Redis key (chỉ là cache)
+            // Sau khi DB commit thành công, set Redis key
             long secondsUntilMidnight = java.time.Duration.between(
                     LocalDateTime.now(),
                     today.atStartOfDay().plusDays(1)
