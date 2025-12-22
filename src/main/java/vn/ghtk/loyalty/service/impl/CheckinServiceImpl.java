@@ -53,7 +53,7 @@ public class CheckinServiceImpl implements CheckinService {
         String redisKey = String.format("checkin:%d:%s", userId, today.format(DateTimeFormatter.ISO_DATE));
 
         // Quick check Redis for early exit (Redis chỉ set sau khi DB commit thành công)
-        if (Boolean.TRUE.equals(redisTemplate.hasKey(redisKey))) {
+        if (redisTemplate.hasKey(redisKey)) {
             throw new BusinessException("You have already checked in today");
         }
 
