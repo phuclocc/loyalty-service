@@ -1,6 +1,9 @@
-version: '3.8'
+#version: '3.8'
 
 services:
+  # ===========================================
+  # DATABASE & CACHE (Existing)
+  # ===========================================
   mysql:
     image: mysql:8.0
     container_name: loyalty-mysql
@@ -34,6 +37,129 @@ services:
     networks:
       - loyalty-network
 
+  # ===========================================
+  # KAFKA ECOSYSTEM (New)
+  # ===========================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: loyalty-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loyalty-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: loyalty-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_DELETE_TOPIC_ENABLE: 'true'
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+      KAFKA_COMPRESSION_TYPE: snappy
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - loyalty-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: loyalty-kafka-ui
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: loyalty-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    networks:
+      - loyalty-network
+
+  # ===========================================
+  # APACHE FLINK (New)
+  # ===========================================
+  flink-jobmanager:
+    image: flink:1.18.1-java17
+    container_name: loyalty-flink-jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 2048m
+        state.backend: hashmap
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        state.savepoints.dir: file:///tmp/flink-savepoints
+    volumes:
+      - flink_jobmanager_data:/tmp/flink-checkpoints
+      - flink_savepoints:/tmp/flink-savepoints
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loyalty-network
+
+  flink-taskmanager:
+    image: flink:1.18.1-java17
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    command: taskmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 2048m
+    volumes:
+      - flink_taskmanager_data:/tmp/flink-data
+    networks:
+      - loyalty-network
+    deploy:
+      replicas: 2
+
+  # ===========================================
+  # LOYALTY SERVICE (Producer) - Optional
+  # ===========================================
+  # Uncomment to run loyalty-service in Docker
+  # By default, run it locally with: mvn spring-boot:run
+  
   app:
     build:
       context: .
@@ -47,10 +173,14 @@ services:
       SPRING_DATASOURCE_PASSWORD: root
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_CHECKIN: loyalty.checkin
     depends_on:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     networks:
       - loyalty-network
@@ -59,6 +189,12 @@ services:
 volumes:
   mysql_data:
   redis_data:
+  zookeeper_data:
+  zookeeper_logs:
+  kafka_data:
+  flink_jobmanager_data:
+  flink_savepoints:
+  flink_taskmanager_data:
 
 networks:
   loyalty-network:
