@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "loyalty-service-collection",
 		"name": "Loyalty Service API",
-		"description": "API collection for Loyalty Service - Daily Check-in and Points Management",
+		"description": "API collection for Loyalty Service - Daily Check-in and Points Management\n\nSupports two architectures:\n1. Synchronous API (v1): Real-time processing with direct DB writes\n2. Event-Driven API (v2): Kafka + Flink for high throughput\n\nVersion: 2.0",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
@@ -95,10 +95,11 @@
 			]
 		},
 		{
-			"name": "Check-in",
+			"name": "Check-in v1 (Synchronous)",
+			"description": "Traditional synchronous check-in API with direct DB writes",
 			"item": [
 				{
-					"name": "Daily Check-in",
+					"name": "Daily Check-in (Sync)",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -112,7 +113,8 @@
 							"raw": "{{baseUrl}}/api/checkin",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "checkin"]
-						}
+						},
+						"description": "Synchronous check-in with immediate DB write\n- Response time: ~50-200ms\n- Throughput: ~100-200 req/s\n- Immediate consistency"
 					}
 				},
 				{
@@ -130,7 +132,66 @@
 							"raw": "{{baseUrl}}/api/checkin/status",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "checkin", "status"]
-						}
+						},
+						"description": "Get check-in status for current month"
+					}
+				}
+			]
+		},
+		{
+			"name": "Check-in v2 (Event-Driven)",
+			"description": "Event-driven check-in API via Kafka and Flink",
+			"item": [
+				{
+					"name": "Daily Check-in v2 (Event-Driven)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"requestId\": \"550e8400-e29b-41d4-a716-446655440000\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v2/checkin",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v2", "checkin"]
+						},
+						"description": "Event-driven check-in via Kafka\n- Response time: ~10-30ms (async)\n- Throughput: ~1000+ req/s\n- Eventual consistency (~1-5s)\n- Exactly-once semantics\n- Request body is optional"
+					}
+				},
+				{
+					"name": "Daily Check-in v2 (No Body)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/v2/checkin",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v2", "checkin"]
+						},
+						"description": "Event-driven check-in without request body\nSystem will auto-generate requestId"
 					}
 				}
 			]

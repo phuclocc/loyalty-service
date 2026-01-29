@@ -42,6 +42,16 @@ spring:
       secret: loyalty-service-secret-key-for-jwt-token-generation-minimum-256-bits
       expiration: 86400000
 
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    topic:
+      checkin: ${KAFKA_TOPIC_CHECKIN:loyalty.checkin}
+    producer:
+      acks: all
+      retries: 3
+      enable-idempotence: true
+      max-in-flight-requests-per-connection: 5
+
 loyalty:
   checkin:
     points-sequence: ${CHECKIN_POINTS_SEQUENCE:1,2,3,5,8,13,21}

@@ -2,6 +2,10 @@
 
 Service quản lý điểm danh hàng ngày và hệ thống điểm thưởng, được xây dựng với Java 21 và Spring Boot 3.3.x.
 
+Hệ thống hỗ trợ **2 kiến trúc**:
+1. **Synchronous API** (v1): Xử lý real-time, trực tiếp ghi DB
+2. **Event-Driven API** (v2): Publish event to Kafka, xử lý bất đồng bộ bởi Flink
+
 ## 🚀 Tech Stack
 
 - **Java 21**
@@ -12,37 +16,104 @@ Service quản lý điểm danh hàng ngày và hệ thống điểm thưởng, 
 - **Spring Security** - JWT authentication
 - **Liquibase** - Database migration
 - **Lombok** - Code generation
+- **Apache Kafka** - Event streaming platform
+- **Apache Flink 1.18.1** - Stream processing engine
 - **Docker Compose** - Container orchestration
 
 ## 📋 Tính năng
 
-1. **Quản lý User**
+### 1. Quản lý User
    - Tạo user mới
    - Lấy thông tin profile user
    - Xem tổng điểm và số ngày điểm danh trong tháng
 
-2. **Điểm danh hàng ngày**
+### 2. Điểm danh hàng ngày
+
+#### A. API v1 - Synchronous (Existing)
+   - Endpoint: `POST /api/checkin`
    - Điểm danh trong 2 khung giờ: 9h-11h và 19h-21h
    - Mỗi ngày chỉ được điểm danh 1 lần
    - Mỗi tháng tối đa 7 lần điểm danh
    - Điểm thưởng theo thứ tự: 1, 2, 3, 5, 8, 13, 21
    - Sử dụng Redis lock để tránh double-checkin
+   - Xử lý real-time, trực tiếp ghi DB
 
-3. **Quản lý điểm**
+#### B. API v2 - Event-Driven (New)
+   - Endpoint: `POST /api/v2/checkin`
+   - Validate request và publish event to Kafka
+   - Xử lý bất đồng bộ bởi Flink consumer
+   - Exactly-once semantics end-to-end
+   - Deduplication theo `eventId`
+   - Suitable cho high throughput (1M-50M events/day)
+
+### 3. Quản lý điểm
    - Xem lịch sử cộng/trừ điểm (có phân trang)
    - Trừ điểm (không cho phép âm)
    - Lọc theo tháng
 
-## 🏗️ Cấu trúc thư mục
+## 🏗️ Kiến trúc hệ thống
 
+```
+┌─────────────────┐
+│   User Client   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│              Loyalty Service (Spring Boot)               │
+│  ┌──────────────┐              ┌──────────────────────┐ │
+│  │  API v1      │              │     API v2           │ │
+│  │ /api/checkin │              │  /api/v2/checkin     │ │
+│  │ (sync)       │              │  (event-driven)      │ │
+│  └──────┬───────┘              └──────────┬───────────┘ │
+│         │                                 │             │
+│         ▼                                 ▼             │
+│  ┌────────────┐                  ┌──────────────┐      │
+│  │ Redis Lock │                  │Kafka Producer│      │
+│  └────────────┘                  └──────┬───────┘      │
+│         │                               │              │
+│         ▼                               │              │
+│  ┌────────────┐                         │              │
+│  │   MySQL    │◄────────────────────────┘              │
+│  └────────────┘                         │              │
+└──────────────────────────────────────────┼──────────────┘
+                                           │
+                                           ▼
+                              ┌────────────────────────┐
+                              │   Kafka Topic          │
+                              │  loyalty.checkin       │
+                              └─────────┬──────────────┘
+                                        │
+                                        ▼
+                              ┌────────────────────────┐
+                              │  Flink Consumer Job    │
+                              │  - Deduplication       │
+                              │  - Business Logic      │
+                              │  - Exactly-once        │
+                              └─────────┬──────────────┘
+                                        │
+                                        ▼
+                              ┌────────────────────────┐
+                              │   MySQL (Sink)         │
+                              │  - users               │
+                              │  - daily_checkin       │
+                              │  - user_points_history │
+                              │  - checkin_events      │
+                              └────────────────────────┘
+```
+
+## 📁 Cấu trúc thư mục
+
+### loyalty-service (Producer)
 ```
 loyalty-service/
 ├── src/
 │   ├── main/
 │   │   ├── java/vn/ghtk/loyalty/
-│   │   │   ├── config/          # Configuration (Redis, Security, JWT)
-│   │   │   ├── controller/       # REST Controllers
-│   │   │   ├── dto/             # Data Transfer Objects
+│   │   │   ├── config/          # Configuration (Redis, Security, JWT, Kafka)
+│   │   │   ├── controller/      # REST Controllers (v1 & v2)
+│   │   │   ├── dto/
+│   │   │   │   ├── event/       # Kafka event DTOs
 │   │   │   │   ├── request/     # Request DTOs
 │   │   │   │   └── response/    # Response DTOs
 │   │   │   ├── entity/          # JPA Entities
@@ -51,14 +122,40 @@ loyalty-service/
 │   │   │   ├── filter/          # Security filters
 │   │   │   ├── repository/      # JPA Repositories
 │   │   │   ├── service/         # Business logic
-│   │   │   │   └── impl/       # Service implementations
-│   │   │   └── util/           # Utilities
+│   │   │   │   └── impl/        # Service implementations
+│   │   │   └── util/            # Utilities
 │   │   └── resources/
 │   │       ├── application.yml
 │   │       └── db/
-│   │           └── changelog/  # Liquibase migrations
+│   │           └── changelog/   # Liquibase migrations
 │   └── test/
-├── docker-compose.yml
+├── docker-compose.yml            # Kafka, Flink, MySQL, Redis
+├── kafka-topics-setup.sh         # Kafka topic creation script
+├── kafka-topics-setup.bat        # Windows version
+├── SIZING.md                     # Sizing & capacity planning
+├── pom.xml
+└── README.md
+```
+
+### loyalty-flink-consumer (Consumer)
+```
+loyalty-flink-consumer/
+├── src/
+│   └── main/
+│       ├── java/vn/ghtk/loyalty/flink/
+│       │   ├── CheckinEventConsumerJob.java  # Main job
+│       │   ├── model/
+│       │   │   ├── CheckinEvent.java         # Event model
+│       │   │   ├── EventMetadata.java        # Metadata
+│       │   │   └── ProcessedCheckin.java     # Processed result
+│       │   ├── function/
+│       │   │   ├── CheckinEventDeserializer.java   # Kafka deserializer
+│       │   │   ├── CheckinProcessFunction.java     # Process with dedup
+│       │   │   └── MySQLCheckinSink.java           # JDBC sink (2PC)
+│       │   └── config/
+│       │       └── JobConfig.java            # Job configuration
+│       └── resources/
+│           └── log4j2.properties
 ├── pom.xml
 └── README.md
 ```
@@ -71,10 +168,18 @@ loyalty-service/
 - Maven 3.8+
 - Docker và Docker Compose
 
-### Chạy MySQL và Redis với Docker Compose
+### Bước 1: Khởi động Infrastructure với Docker Compose
+
+File `docker-compose.yml` hiện bao gồm:
+- **MySQL 8.0** - Database
+- **Redis 7** - Cache & Distributed Lock
+- **Kafka + Zookeeper** - Event streaming
+- **Kafka UI** - Web UI for Kafka (http://localhost:8090)
+- **Flink JobManager + TaskManager** - Stream processing
+- **Flink Web UI** - http://localhost:8081
 
 ```bash
-# Chạy MySQL và Redis
+# Khởi động tất cả services
 docker-compose up -d
 
 # Kiểm tra containers đang chạy
@@ -83,14 +188,20 @@ docker-compose ps
 # Xem logs
 docker-compose logs -f
 
+# Xem logs của service cụ thể
+docker-compose logs -f kafka
+docker-compose logs -f flink-jobmanager
+
 # Dừng tất cả
 docker-compose down
+
+# Dừng và xóa volumes (clean slate)
+docker-compose down -v
 ```
 
 **Lưu ý:** 
-- File `docker-compose.yml` chỉ chạy MySQL và Redis
-- App sẽ chạy ở local bằng `mvn spring-boot:run`
-- Nếu muốn chạy app trong Docker, uncomment service `app` trong `docker-compose.yml` (cần có Dockerfile)
+- App `loyalty-service` sẽ chạy ở local bằng `mvn spring-boot:run`
+- Nếu muốn chạy app trong Docker, uncomment service `app` trong `docker-compose.yml`
 
 ### Cấu hình Database
 
@@ -102,9 +213,41 @@ File `application.yml` đã được cấu hình sẵn:
 
 Liquibase sẽ tự động tạo tables khi ứng dụng khởi động.
 
-### Build và chạy ứng dụng (nếu không dùng Docker cho app)
+### Bước 2: Tạo Kafka Topic
+
+Sau khi Kafka đã chạy, tạo topic `loyalty.checkin`:
+
+**Linux/Mac:**
+```bash
+chmod +x kafka-topics-setup.sh
+./kafka-topics-setup.sh
+```
+
+**Windows:**
+```bash
+kafka-topics-setup.bat
+```
+
+Script sẽ hỏi bạn chọn configuration:
+1. Development (1M events/day) - 4 partitions
+2. Production (10M events/day) - 8 partitions
+3. High Load (50M events/day) - 16 partitions
+4. Custom
+
+Hoặc tạo manual:
+```bash
+docker exec -it loyalty-kafka kafka-topics --create \
+  --bootstrap-server localhost:9092 \
+  --topic loyalty.checkin \
+  --partitions 4 \
+  --replication-factor 1
+```
+
+### Bước 3: Build và chạy loyalty-service (Producer)
 
 ```bash
+cd loyalty-service
+
 # Build project
 mvn clean install
 
@@ -118,6 +261,34 @@ java -jar target/loyalty-service-0.0.1-SNAPSHOT.jar
 ```
 
 Ứng dụng sẽ chạy tại: `http://localhost:8080`
+
+### Bước 4: Build và Deploy Flink Consumer Job
+
+```bash
+cd ../loyalty-flink-consumer
+
+# Build Flink job
+mvn clean package
+
+# Submit job to Flink cluster
+docker cp target/loyalty-flink-consumer-1.0.0-SNAPSHOT.jar loyalty-flink-jobmanager:/opt/flink/
+
+docker exec -it loyalty-flink-jobmanager flink run \
+  -c vn.ghtk.loyalty.flink.CheckinEventConsumerJob \
+  -p 4 \
+  /opt/flink/loyalty-flink-consumer-1.0.0-SNAPSHOT.jar \
+  --kafka.bootstrap.servers kafka:29092 \
+  --kafka.topic loyalty.checkin \
+  --mysql.url jdbc:mysql://mysql:3306/loyalty_db \
+  --mysql.username root \
+  --mysql.password root \
+  --checkpoint.interval 60000 \
+  --parallelism 4
+```
+
+Kiểm tra Flink job đang chạy:
+- Flink Web UI: http://localhost:8081
+- Kafka UI: http://localhost:8090
 
 ### Chạy App trong Docker (Optional)
 
@@ -190,7 +361,7 @@ Response mẫu:
 Authorization: Bearer {token}
 ```
 
-### 4. Điểm danh
+### 4. Điểm danh v1 (Synchronous)
 
 **POST** `/api/checkin`
 
@@ -203,6 +374,59 @@ Authorization: Bearer {token}
 - Chỉ được điểm danh trong khung giờ 9h-11h hoặc 19h-21h
 - Mỗi ngày chỉ được điểm danh 1 lần
 - Mỗi tháng tối đa 7 lần
+- Xử lý real-time, trực tiếp ghi DB
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Check-in successful",
+  "data": {
+    "success": true,
+    "message": "Check-in successful",
+    "pointsEarned": 5,
+    "totalPoints": 120,
+    "checkinOrder": 4
+  }
+}
+```
+
+### 4b. Điểm danh v2 (Event-Driven)
+
+**POST** `/api/v2/checkin`
+
+**Headers:**
+```
+Authorization: Bearer {token}
+Content-Type: application/json
+```
+
+**Body (Optional):**
+```json
+{
+  "requestId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Lưu ý:**
+- Chỉ validate và publish event to Kafka
+- Xử lý bất đồng bộ bởi Flink
+- Exactly-once guarantee
+- Suitable cho high throughput
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Check-in event published successfully. Points will be credited shortly.",
+  "data": {
+    "eventId": "123_20260125_1737800000_a1b2c3d4",
+    "success": true,
+    "message": "Check-in event published successfully. Points will be credited shortly.",
+    "eventTimestamp": "2026-01-25T10:30:00"
+  }
+}
+```
 
 ### 5. Lấy trạng thái điểm danh 7 ngày
 
@@ -291,6 +515,27 @@ Authorization: Bearer <accessToken>
 - `checkin_date`
 - Unique constraint: `(user_id, checkin_date)`
 
+### Checkin Events (New - for Event-Driven)
+- `id` (BIGINT, PK)
+- `event_id` (VARCHAR, unique, not null) - For deduplication
+- `user_id` (BIGINT, FK)
+- `checkin_date` (DATE)
+- `event_timestamp` (DATETIME)
+- `year_month` (VARCHAR(6)) - yyyyMM for partitioning
+- `points_earned` (INT, nullable)
+- `processed` (BOOLEAN) - Processing status
+- `processed_at` (DATETIME, nullable)
+- `error_message` (VARCHAR(500), nullable)
+- `created_at` (DATETIME)
+- `updated_at` (DATETIME)
+
+**Indexes:**
+- `event_id` (unique)
+- `user_id, checkin_date`
+- `year_month`
+- `processed`
+- `created_at`
+
 ## 🔒 Redis và Distributed Lock
 
 ### Tại sao dùng Redis?
@@ -313,12 +558,21 @@ Khi user điểm danh:
 5. Lưu vào Redis với expiration đến cuối ngày
 6. Release lock
 
-## 🔄 Transaction
+## 🔄 Transaction & Exactly-Once
 
-Tất cả các thao tác cộng/trừ điểm đều được thực hiện trong transaction để đảm bảo:
-- Tính nhất quán dữ liệu
-- Rollback nếu có lỗi
-- Atomic operations
+### API v1 (Synchronous)
+- Sử dụng Spring `@Transactional`
+- Redis distributed lock (Redisson)
+- ACID guarantees
+
+### API v2 (Event-Driven)
+- **Kafka Producer**: Idempotent producer với `acks=all`
+- **Flink Consumer**: 
+  - Checkpoint với `EXACTLY_ONCE` mode
+  - MapState cho deduplication
+  - 2-Phase Commit (2PC) khi ghi MySQL
+- **MySQL**: XA transactions support
+- **End-to-end exactly-once** từ Kafka → Flink → MySQL
 
 ## 📦 Postman Collection
 
@@ -327,6 +581,22 @@ Import file `postman/Loyalty-Service.postman_collection.json` vào Postman để
 **Variables:**
 - `baseUrl`: `http://localhost:8080`
 - `token`: JWT token (nếu có)
+
+Collection bao gồm:
+- Authentication (Login)
+- User Management
+- Check-in v1 (Synchronous)
+- **Check-in v2 (Event-Driven)** - New!
+- Points Management
+
+## 📊 Sizing & Capacity Planning
+
+Xem chi tiết tại `SIZING.md` cho:
+- Throughput tính toán (1M, 10M, 50M events/day)
+- Kafka partitions sizing
+- Flink parallelism & memory
+- MySQL storage growth
+- Infrastructure requirements
 
 ## 🧪 Testing
 
@@ -343,6 +613,25 @@ mvn test
 - Exception handling toàn cục
 - Validation đầy đủ cho request
 
+## 🔀 So sánh API v1 vs v2
+
+| Feature | API v1 (Sync) | API v2 (Event-Driven) |
+|---------|---------------|----------------------|
+| **Endpoint** | POST /api/checkin | POST /api/v2/checkin |
+| **Response Time** | ~50-200ms | ~10-30ms (async) |
+| **Throughput** | ~100-200 req/s | ~1000+ req/s |
+| **Consistency** | Immediate | Eventual (~1-5s) |
+| **Deduplication** | Redis Lock | Kafka eventId + Flink MapState |
+| **Failure Handling** | Retry in request | Kafka replay + checkpoint |
+| **Scalability** | Vertical | Horizontal (Kafka + Flink) |
+| **Use Case** | Low traffic, real-time | High traffic, analytics |
+
+## 📚 Related Projects
+
+- **loyalty-flink-consumer**: Apache Flink consumer job (separate repository)
+  - Location: `../loyalty-flink-consumer`
+  - README: See project README for details
+
 ## 🐛 Troubleshooting
 
 ### MySQL connection error
@@ -352,6 +641,25 @@ mvn test
 ### Redis connection error
 - Kiểm tra Redis container: `docker-compose logs redis`
 - Test connection: `docker exec -it loyalty-redis redis-cli ping`
+
+### Kafka connection error
+- Kiểm tra Kafka: `docker-compose logs kafka`
+- Test topic: `docker exec -it loyalty-kafka kafka-topics --list --bootstrap-server localhost:9092`
+- Check UI: http://localhost:8090
+
+### Flink job not running
+- Check Flink UI: http://localhost:8081
+- Check logs: `docker-compose logs flink-jobmanager`
+- Verify job submission: `docker exec -it loyalty-flink-jobmanager flink list`
+
+### Events not processed
+1. Check Kafka topic has messages:
+   ```bash
+   docker exec -it loyalty-kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic loyalty.checkin --from-beginning
+   ```
+2. Check Flink job status: http://localhost:8081
+3. Check MySQL table `checkin_events` for processed events
+4. Check Flink logs for errors
 
 ### Liquibase migration error
 - Xóa database và tạo lại
