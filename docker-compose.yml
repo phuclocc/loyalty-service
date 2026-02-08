@@ -160,31 +160,31 @@ services:
   # Uncomment to run loyalty-service in Docker
   # By default, run it locally with: mvn spring-boot:run
   
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: loyalty-service
-    ports:
-      - "8080:8080"
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/loyalty_db?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
-      SPRING_DATASOURCE_USERNAME: root
-      SPRING_DATASOURCE_PASSWORD: root
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: 6379
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      KAFKA_TOPIC_CHECKIN: loyalty.checkin
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    networks:
-      - loyalty-network
-    restart: unless-stopped
+#  app:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    container_name: loyalty-service
+#    ports:
+#      - "8080:8080"
+#    environment:
+#      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/loyalty_db?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC
+#      SPRING_DATASOURCE_USERNAME: root
+#      SPRING_DATASOURCE_PASSWORD: root
+#      SPRING_DATA_REDIS_HOST: redis
+#      SPRING_DATA_REDIS_PORT: 6379
+#      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+#      KAFKA_TOPIC_CHECKIN: loyalty.checkin
+#    depends_on:
+#      mysql:
+#        condition: service_healthy
+#      redis:
+#        condition: service_healthy
+#      kafka:
+#        condition: service_healthy
+#    networks:
+#      - loyalty-network
+#    restart: unless-stopped
 
 volumes:
   mysql_data:

@@ -9,6 +9,7 @@
     <include file="db/changelog/changes/002-create-user-points-history-table.xml"/>
     <include file="db/changelog/changes/003-create-daily-checkin-table.xml"/>
     <include file="db/changelog/changes/004-create-checkin-events-table.xml"/>
+    <include file="db/changelog/changes/005-add-checkin-order-to-checkin-events.xml"/>
 
 </databaseChangeLog>
 

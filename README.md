@@ -1,5 +1,10 @@
 # Loyalty Service
 
+> **Part of Loyalty System:** Đây là Spring Boot application (Producer + DB Writer) trong hệ thống 3-tier architecture.
+> - **loyalty-infra** - Infrastructure (xem [../loyalty-infra](../loyalty-infra))
+> - **loyalty-service** - Application này
+> - **loyalty-flink-consumer** - Flink job (xem [../loyalty-flink-consumer](../loyalty-flink-consumer))
+
 Service quản lý điểm danh hàng ngày và hệ thống điểm thưởng, được xây dựng với Java 21 và Spring Boot 3.3.x.
 
 Hệ thống hỗ trợ **2 kiến trúc**:
@@ -52,6 +57,67 @@ Hệ thống hỗ trợ **2 kiến trúc**:
    - Lọc theo tháng
 
 ## 🏗️ Kiến trúc hệ thống
+
+### Kiến trúc Event-Driven (v2)
+
+```
+┌─────────────────┐
+│   User Client   │
+└────────┬────────┘
+         │
+         ▼
+┌────────────────────────────────────────────────────────────────┐
+│              Loyalty Service (Spring Boot)                      │
+│                                                                 │
+│  ┌─────────────────────┐         ┌──────────────────────────┐ │
+│  │  API v2 (Producer)  │         │  DB Writer (Consumer)     │ │
+│  │  /api/v2/checkin    │         │  @KafkaListener           │ │
+│  │  Validate + Publish │         │  Consume transaction      │ │
+│  └──────────┬──────────┘         └─────────▲────────────────┘ │
+│             │                              │                   │
+└─────────────┼──────────────────────────────┼───────────────────┘
+              │                              │
+              ▼                              │
+   ┌──────────────────────┐         ┌────────────────────────┐
+   │ Kafka Topic          │         │ Kafka Topic            │
+   │ loyalty.checkin.raw  │         │ loyalty.point.         │
+   │ (raw events)         │         │ transaction            │
+   └──────────┬───────────┘         └────────▲───────────────┘
+              │                              │
+              ▼                              │
+   ┌──────────────────────────────────────────────────────────┐
+   │         Flink Consumer Job (Stream Processing)           │
+   │  Kafka Source → keyBy(userId) → Dedup (state)            │
+   │  → Apply rule (points) → Kafka Sink (transactional)      │
+   └──────────────────────────────────────────────────────────┘
+                                             │
+                                             └──────────────┐
+                                                            │
+                                                            ▼
+                                                  ┌─────────────────┐
+                                                  │     MySQL       │
+                                                  │  - users        │
+                                                  │  - daily_checkin│
+                                                  │  - points_history│
+                                                  │  - checkin_events│
+                                                  └─────────────────┘
+```
+
+### Luồng xử lý (Event-Driven v2)
+
+1. **Client** gọi `POST /api/v2/checkin` → loyalty-service (Producer).
+2. **Producer** validate, tạo eventId, publish event lên **loyalty.checkin.raw** (Kafka idempotent + transactional).
+3. **Flink** consume loyalty.checkin.raw → dedup (state + DB) → apply rule điểm → publish **loyalty.point.transaction** (Kafka transactional sink).
+4. **DB Writer** (trong loyalty-service) consume loyalty.point.transaction → dedup transactionId → ghi MySQL (users, daily_checkin, points_history).
+
+**Exactly-once guarantee:**
+- Producer: Kafka idempotent + transactional.
+- Flink: Checkpointing + Kafka transactional sink.
+- DB Writer: Manual commit + idempotent DB write (dedup transactionId).
+
+---
+
+## 🏗️ Kiến trúc hệ thống (v1 - Synchronous)
 
 ```
 ┌─────────────────┐
@@ -137,23 +203,23 @@ loyalty-service/
 └── README.md
 ```
 
-### loyalty-flink-consumer (Consumer)
+### loyalty-flink-consumer (Stream Processor)
 ```
 loyalty-flink-consumer/
 ├── src/
 │   └── main/
 │       ├── java/vn/ghtk/loyalty/flink/
-│       │   ├── CheckinEventConsumerJob.java  # Main job
+│       │   ├── CheckinEventConsumerJob.java        # Main job (Kafka → Kafka)
 │       │   ├── model/
-│       │   │   ├── CheckinEvent.java         # Event model
-│       │   │   ├── EventMetadata.java        # Metadata
-│       │   │   └── ProcessedCheckin.java     # Processed result
+│       │   │   ├── CheckinEvent.java               # Input event
+│       │   │   ├── PointTransactionEvent.java      # Output event
+│       │   │   └── EventMetadata.java              # Metadata
 │       │   ├── function/
 │       │   │   ├── CheckinEventDeserializer.java   # Kafka deserializer
-│       │   │   ├── CheckinProcessFunction.java     # Process with dedup
-│       │   │   └── MySQLCheckinSink.java           # JDBC sink (2PC)
+│       │   │   ├── PointTransactionProcessFunction.java  # Dedup + rule
+│       │   │   └── PointTransactionSerializer.java  # Kafka serializer
 │       │   └── config/
-│       │       └── JobConfig.java            # Job configuration
+│       │       └── JobConfig.java                  # Job configuration
 │       └── resources/
 │           └── log4j2.properties
 ├── pom.xml
@@ -213,40 +279,34 @@ File `application.yml` đã được cấu hình sẵn:
 
 Liquibase sẽ tự động tạo tables khi ứng dụng khởi động.
 
-### Bước 2: Tạo Kafka Topic
+### Bước 2: Tạo Kafka Topics (2 topics)
 
-Sau khi Kafka đã chạy, tạo topic `loyalty.checkin`:
+**Cách 1 - Dùng script:**
 
-**Linux/Mac:**
-```bash
-chmod +x kafka-topics-setup.sh
-./kafka-topics-setup.sh
+```powershell
+cd D:\job\project\loyalty-service
+.\setup-kafka-topics.bat
 ```
 
-**Windows:**
-```bash
-kafka-topics-setup.bat
+**Cách 2 - Manual:**
+
+```powershell
+# Topic 1: loyalty.checkin.raw (raw events from API)
+docker exec -it loyalty-kafka kafka-topics --create --bootstrap-server localhost:9092 --topic loyalty.checkin.raw --partitions 4 --replication-factor 1 --config compression.type=snappy --if-not-exists
+
+# Topic 2: loyalty.point.transaction (transaction events from Flink)
+docker exec -it loyalty-kafka kafka-topics --create --bootstrap-server localhost:9092 --topic loyalty.point.transaction --partitions 4 --replication-factor 1 --config compression.type=snappy --if-not-exists
+
+# Verify
+docker exec -it loyalty-kafka kafka-topics --list --bootstrap-server localhost:9092
 ```
 
-Script sẽ hỏi bạn chọn configuration:
-1. Development (1M events/day) - 4 partitions
-2. Production (10M events/day) - 8 partitions
-3. High Load (50M events/day) - 16 partitions
-4. Custom
+### Bước 3: Build và chạy loyalty-service (Producer + DB Writer)
 
-Hoặc tạo manual:
-```bash
-docker exec -it loyalty-kafka kafka-topics --create \
-  --bootstrap-server localhost:9092 \
-  --topic loyalty.checkin \
-  --partitions 4 \
-  --replication-factor 1
-```
+### Bước 3: Build và chạy loyalty-service (Producer + DB Writer)
 
-### Bước 3: Build và chạy loyalty-service (Producer)
-
-```bash
-cd loyalty-service
+```powershell
+cd ..\loyalty-service
 
 # Build project
 mvn clean install
@@ -264,29 +324,24 @@ java -jar target/loyalty-service-0.0.1-SNAPSHOT.jar
 
 ### Bước 4: Build và Deploy Flink Consumer Job
 
-```bash
-cd ../loyalty-flink-consumer
+```powershell
+cd D:\job\project\loyalty-flink-consumer
 
 # Build Flink job
-mvn clean package
+mvn clean package -DskipTests
 
-# Submit job to Flink cluster
-docker cp target/loyalty-flink-consumer-1.0.0-SNAPSHOT.jar loyalty-flink-jobmanager:/opt/flink/
+# Submit job to Flink cluster (1 dòng)
+docker cp target\loyalty-flink-consumer-1.0.0-SNAPSHOT.jar loyalty-flink-jobmanager:/opt/flink/
 
-docker exec -it loyalty-flink-jobmanager flink run \
-  -c vn.ghtk.loyalty.flink.CheckinEventConsumerJob \
-  -p 4 \
-  /opt/flink/loyalty-flink-consumer-1.0.0-SNAPSHOT.jar \
-  --kafka.bootstrap.servers kafka:29092 \
-  --kafka.topic loyalty.checkin \
-  --mysql.url jdbc:mysql://mysql:3306/loyalty_db \
-  --mysql.username root \
-  --mysql.password root \
-  --checkpoint.interval 60000 \
-  --parallelism 4
+docker exec -it loyalty-flink-jobmanager flink run -c vn.ghtk.loyalty.flink.CheckinEventConsumerJob -p 4 /opt/flink/loyalty-flink-consumer-1.0.0-SNAPSHOT.jar --kafka.bootstrap.servers kafka:29092 --kafka.topic loyalty.checkin.raw --kafka.group.id loyalty-flink-consumer --kafka.output.topic loyalty.point.transaction --mysql.url jdbc:mysql://mysql:3306/loyalty_db --mysql.username root --mysql.password root --checkpoint.interval 60000 --parallelism 4
 ```
 
-Kiểm tra Flink job đang chạy:
+**Lưu ý:**
+- Flink job bây giờ **không ghi trực tiếp vào MySQL**.
+- Flink consume `loyalty.checkin.raw` → xử lý → publish `loyalty.point.transaction`.
+- DB Writer trong loyalty-service sẽ consume `loyalty.point.transaction` và ghi vào MySQL.
+
+Kiểm tra:
 - Flink Web UI: http://localhost:8081
 - Kafka UI: http://localhost:8090
 

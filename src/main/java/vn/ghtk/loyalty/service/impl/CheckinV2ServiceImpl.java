@@ -30,7 +30,7 @@ public class CheckinV2ServiceImpl implements CheckinV2Service {
     private static final LocalTime MORNING_START = LocalTime.of(0, 30);
     private static final LocalTime MORNING_END = LocalTime.of(11, 0);
     private static final LocalTime EVENING_START = LocalTime.of(19, 0);
-    private static final LocalTime EVENING_END = LocalTime.of(23, 0);
+    private static final LocalTime EVENING_END = LocalTime.of(23, 59);
 
     private final CheckinEventProducer checkinEventProducer;
 

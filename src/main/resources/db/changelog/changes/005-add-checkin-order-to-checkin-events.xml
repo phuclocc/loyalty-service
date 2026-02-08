@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.20.xsd">
+
+    <changeSet id="005-add-checkin-order-to-checkin-events" author="system">
+        <comment>Add checkin_order column to checkin_events table</comment>
+
+        <addColumn tableName="checkin_events">
+            <column name="checkin_order" type="INT">
+                <constraints nullable="true"/>
+            </column>
+        </addColumn>
+
+        <rollback>
+            <dropColumn tableName="checkin_events" columnName="checkin_order"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

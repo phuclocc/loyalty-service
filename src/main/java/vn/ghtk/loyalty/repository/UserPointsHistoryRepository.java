@@ -24,5 +24,11 @@ public interface UserPointsHistoryRepository extends JpaRepository<UserPointsHis
             @Param("month") int month,
             Pageable pageable
     );
+
+    /**
+     * Check if a transaction already exists by searching description
+     * Used for deduplication in DB Writer
+     */
+    boolean existsByDescriptionContaining(String transactionId);
 }
 

@@ -45,12 +45,18 @@ spring:
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     topic:
-      checkin: ${KAFKA_TOPIC_CHECKIN:loyalty.checkin}
+      checkin: ${KAFKA_TOPIC_CHECKIN:loyalty.checkin.raw}
+      point-transaction: ${KAFKA_TOPIC_POINT_TRANSACTION:loyalty.point.transaction}
     producer:
       acks: all
       retries: 3
       enable-idempotence: true
       max-in-flight-requests-per-connection: 5
+    consumer:
+      group-id: loyalty-db-writer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 500
 
 loyalty:
   checkin:
