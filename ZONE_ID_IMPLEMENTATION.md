@@ -15,11 +15,65 @@ POST /api/auth/login { zone_id: "Asia/Bangkok" }
 
 ---
 
-## Bước 1 — Sửa `LoginRequest.java`
+## Bước 1 — Tạo `@ValidZoneId` annotation + Validator (file mới)
+
+Tạo custom constraint để validate `zone_id` hợp lệ ngay tại DTO.
+
+**File 1:** `src/main/java/vn/ghtk/loyalty/validation/ValidZoneId.java`
+
+```java
+package vn.ghtk.loyalty.validation;
+
+import jakarta.validation.Constraint;
+import jakarta.validation.Payload;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Target(ElementType.FIELD)
+@Retention(RetentionPolicy.RUNTIME)
+@Constraint(validatedBy = ZoneIdValidator.class)
+public @interface ValidZoneId {
+    String message() default "Invalid zone_id. Must be a valid IANA timezone (e.g. Asia/Ho_Chi_Minh, UTC)";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+```
+
+**File 2:** `src/main/java/vn/ghtk/loyalty/validation/ZoneIdValidator.java`
+
+```java
+package vn.ghtk.loyalty.validation;
+
+import jakarta.validation.ConstraintValidator;
+import jakarta.validation.ConstraintValidatorContext;
+
+import java.time.ZoneId;
+
+public class ZoneIdValidator implements ConstraintValidator<ValidZoneId, String> {
+
+    @Override
+    public boolean isValid(String value, ConstraintValidatorContext context) {
+        if (value == null || value.isBlank()) return true; // để @NotBlank xử lý
+        try {
+            ZoneId.of(value);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+}
+```
+
+---
+
+## Bước 2 — Sửa `LoginRequest.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/dto/request/LoginRequest.java`
 
-Thêm field `zoneId` với annotation `@NotBlank`:
+Thêm field `zoneId` với `@NotBlank` + `@ValidZoneId`:
 
 ```java
 package vn.ghtk.loyalty.dto.request;
@@ -28,6 +82,7 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import vn.ghtk.loyalty.validation.ValidZoneId;
 
 @Data
 @NoArgsConstructor
@@ -41,13 +96,19 @@ public class LoginRequest {
     private String password;
 
     @NotBlank(message = "Zone ID is required")
+    @ValidZoneId
     private String zoneId;
 }
 ```
 
+Với cách này:
+- `@NotBlank` → bắt null/rỗng, trả lỗi `"Zone ID is required"`
+- `@ValidZoneId` → bắt timezone sai format, trả lỗi `"Invalid zone_id. Must be a valid IANA timezone..."`
+- `AuthServiceImpl` không cần try-catch `ZoneId.of()` nữa, bỏ đoạn đó đi
+
 ---
 
-## Bước 2 — Tạo `UserPrincipal.java` (file mới)
+## Bước 4 — Tạo `UserPrincipal.java` (file mới)
 
 **File:** `src/main/java/vn/ghtk/loyalty/util/UserPrincipal.java`
 
@@ -63,7 +124,7 @@ public record UserPrincipal(Long userId, ZoneId zoneId) {}
 
 ---
 
-## Bước 3 — Tạo `DateTimeUtil.java` (file mới)
+## Bước 5 — Tạo `DateTimeUtil.java` (file mới)
 
 **File:** `src/main/java/vn/ghtk/loyalty/util/DateTimeUtil.java`
 
@@ -106,7 +167,7 @@ public class DateTimeUtil {
 
 ---
 
-## Bước 4 — Sửa `JwtUtil.java`
+## Bước 6 — Sửa `JwtUtil.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/util/JwtUtil.java`
 
@@ -190,11 +251,11 @@ public class JwtUtil {
 
 ---
 
-## Bước 5 — Sửa `AuthServiceImpl.java`
+## Bước 7 — Sửa `AuthServiceImpl.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/service/impl/AuthServiceImpl.java`
 
-Validate `zone_id` hợp lệ rồi truyền vào `generateToken()`:
+`zone_id` đã được validate ở DTO, service chỉ cần truyền thẳng vào `generateToken()`:
 
 ```java
 package vn.ghtk.loyalty.service.impl;
@@ -209,9 +270,6 @@ import vn.ghtk.loyalty.exception.BusinessException;
 import vn.ghtk.loyalty.repository.UserRepository;
 import vn.ghtk.loyalty.service.AuthService;
 import vn.ghtk.loyalty.util.JwtUtil;
-
-import java.time.DateTimeException;
-import java.time.ZoneId;
 
 @Service
 @RequiredArgsConstructor
@@ -230,12 +288,6 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException("Invalid username or password");
         }
 
-        try {
-            ZoneId.of(request.getZoneId());
-        } catch (DateTimeException e) {
-            throw new BusinessException("Invalid zone_id: '" + request.getZoneId() + "'. Example: Asia/Ho_Chi_Minh, Asia/Bangkok, UTC");
-        }
-
         String token = jwtUtil.generateToken(String.valueOf(user.getId()), request.getZoneId());
 
         return LoginResponse.builder()
@@ -249,7 +301,7 @@ public class AuthServiceImpl implements AuthService {
 
 ---
 
-## Bước 6 — Sửa `JwtAuthenticationFilter.java`
+## Bước 8 — Sửa `JwtAuthenticationFilter.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/filter/JwtAuthenticationFilter.java`
 
@@ -317,7 +369,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
 ---
 
-## Bước 7 — Sửa `SecurityUtil.java`
+## Bước 9 — Sửa `SecurityUtil.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/util/SecurityUtil.java`
 
@@ -350,7 +402,7 @@ public class SecurityUtil {
 
 ---
 
-## Bước 8 — Sửa `PointsHistoryResponse.java`
+## Bước 10 — Sửa `PointsHistoryResponse.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/dto/response/PointsHistoryResponse.java`
 
@@ -388,7 +440,7 @@ public class PointsHistoryResponse {
 
 ---
 
-## Bước 9 — Sửa `UserResponse.java`
+## Bước 11 — Sửa `UserResponse.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/dto/response/UserResponse.java`
 
@@ -425,7 +477,7 @@ public class UserResponse {
 
 ---
 
-## Bước 10 — Sửa `PointsServiceImpl.java`
+## Bước 12 — Sửa `PointsServiceImpl.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/service/impl/PointsServiceImpl.java`
 
@@ -489,7 +541,7 @@ public PageResponse<PointsHistoryResponse> getPointsHistory(Long userId, Integer
 
 ---
 
-## Bước 11 — Sửa `UserServiceImpl.java`
+## Bước 13 — Sửa `UserServiceImpl.java`
 
 **File:** `src/main/java/vn/ghtk/loyalty/service/impl/UserServiceImpl.java`
 
@@ -562,7 +614,7 @@ public UserResponse getUserById(Long userId, ZoneId userZone) {
 
 ---
 
-## Bước 12 — Sửa các Controller
+## Bước 14 — Sửa các Controller
 
 Tại các controller có authenticated endpoint, thêm `Authentication` và truyền `ZoneId` vào service.
 
@@ -599,7 +651,7 @@ public ResponseEntity<ApiResponse<UserResponse>> getUserById(
 
 ---
 
-## Bước 13 — Nhận datetime từ Request (khi cần)
+## Bước 15 — Nhận datetime từ Request (khi cần)
 
 Với các API nhận datetime input từ client (ví dụ filter theo khoảng thời gian), field trong request DTO dùng `LocalDateTime` + `@JsonFormat` để Jackson parse đúng format:
 
@@ -626,19 +678,21 @@ LocalDateTime toDb   = DateTimeUtil.toServerLocalDateTime(request.getToDate(), u
 
 ## Checklist tổng hợp
 
-- [ ] Bước 1: Sửa `LoginRequest.java` — thêm `zoneId`
-- [ ] Bước 2: Tạo `UserPrincipal.java`
-- [ ] Bước 3: Tạo `DateTimeUtil.java`
-- [ ] Bước 4: Sửa `JwtUtil.java` — thêm `zoneId` vào token
-- [ ] Bước 5: Sửa `AuthServiceImpl.java` — validate + truyền `zoneId`
-- [ ] Bước 6: Sửa `JwtAuthenticationFilter.java` — extract `zone_id`, tạo `UserPrincipal`
-- [ ] Bước 7: Sửa `SecurityUtil.java` — thêm `getZoneId()`
-- [ ] Bước 8: Sửa `PointsHistoryResponse.java` — đổi sang `OffsetDateTime`
-- [ ] Bước 9: Sửa `UserResponse.java` — đổi sang `OffsetDateTime`
-- [ ] Bước 10: Sửa `PointsService` interface + `PointsServiceImpl.java`
-- [ ] Bước 11: Sửa `UserService` interface + `UserServiceImpl.java`
-- [ ] Bước 12: Sửa các Controller liên quan
-- [ ] Bước 13: Áp dụng cho request DTO nếu có field datetime
+- [ ] Bước 1: Tạo `@ValidZoneId` annotation + `ZoneIdValidator.java`
+- [ ] Bước 2: Sửa `LoginRequest.java` — thêm `zoneId` + `@NotBlank` + `@ValidZoneId`
+- [ ] Bước 3: Tạo `UserPrincipal.java`
+- [ ] Bước 4: Tạo `UserPrincipal.java` (file mới)
+- [ ] Bước 5: Tạo `DateTimeUtil.java`
+- [ ] Bước 6: Sửa `JwtUtil.java` — thêm `zoneId` vào token
+- [ ] Bước 7: Sửa `AuthServiceImpl.java` — truyền `zoneId` (bỏ try-catch thừa)
+- [ ] Bước 8: Sửa `JwtAuthenticationFilter.java` — extract `zone_id`, tạo `UserPrincipal`
+- [ ] Bước 9: Sửa `SecurityUtil.java` — thêm `getZoneId()`
+- [ ] Bước 10: Sửa `PointsHistoryResponse.java` — đổi sang `OffsetDateTime`
+- [ ] Bước 11: Sửa `UserResponse.java` — đổi sang `OffsetDateTime`
+- [ ] Bước 12: Sửa `PointsService` interface + `PointsServiceImpl.java`
+- [ ] Bước 13: Sửa `UserService` interface + `UserServiceImpl.java`
+- [ ] Bước 14: Sửa các Controller liên quan
+- [ ] Bước 15: Áp dụng cho request DTO nếu có field datetime
 
 ---
 
